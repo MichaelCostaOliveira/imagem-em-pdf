@@ -1,0 +1,118 @@
+--pegar a o pdf do pague seguro tranformar em imagem e juntar tudo
+
+	public static function buildList($ctt_id, $pdf_file = null) {
+		$shipping_file = base_path() . "/storage/app/public/malote_" . $ctt_id . "_" . date("Y") . ".pdf";
+//diretorio onde vai o pdf final
+
+
+		if (file_exists($shipping_file))
+		{
+			unlink($shipping_file);
+		}
+
+		$pdf = new PDFMerger;
+
+		if (is_array($pdf_file))
+		{
+			foreach ($pdf_file as $file)
+			{
+				if (isset($file['path_file']) &&
+					$file['path_file'] != "" &&
+					file_exists($file['path_file']))
+				{
+					$pdf->addPDF($file['path_file'], 'all');
+				}
+			}
+		}
+
+		$contract = Contract::find($ctt_id);
+
+		$limit = $contract->billing_status === 87 ? 99 : 12;
+
+		$query = "select *, (select payment_company_id from invoices where inv_id = invoices_charges.inv_id) as payment_company_id from invoices_charges
+		           where inv_id in (select inv_id from invoices
+		                             where ctt_id = {$ctt_id})
+				     and due_date > now()
+				     and status = 84
+				order by due_date asc
+				   limit ".$limit;
+
+		$invoices = DB::select(DB::raw($query));
+		foreach ($invoices as $key=>$invoice)
+		{
+			try
+			{
+				$bills_to_delete[] = base_path() . "/storage/fatura_" . $invoice->gateway_id.'.pdf';
+				$bills_to_delete[] = base_path() . "/storage/fatura_" . $invoice->gateway_id.'.png';
+
+				if (\App::runningInConsole())
+				{
+					echo "\n Processing bill : " . $invoice->slip_url;
+				}
+
+				if($invoice->payment_company_id === 2) {
+					$invoice->slip_url = route('render_getnet_pdf', $invoice->ivc_id);
+
+					$content = file_get_contents($invoice->slip_url);
+
+					if (isset($content) && $content != false)
+					{
+						$fileToPut = base_path() . "/storage/fatura_" . $invoice->gateway_id;
+						file_put_contents($fileToPut, $content);
+
+						if (file_exists($fileToPut))
+						{
+							$pdf->addPDF($fileToPut, 'all');
+
+						}
+
+					}
+				}elseif ($invoice->payment_company_id === 4){
+					$invoice->slip_url = str_replace('.pdf', '.png', $invoice->slip_url);
+					$fileToPut = base_path() . "/storage/fatura_" . $invoice->gateway_id.'.png';
+					file_put_contents($fileToPut, file_get_contents($invoice->slip_url));
+
+					$mpdf = new Mpdf();
+					$file = $fileToPut;
+					$size =  getimagesize ( $file );
+					$width = $size[0];
+					$height = $size[1];
+					$mpdf->WriteHTML("");
+					$mpdf->Image($file,0,0,$width,$height,"jpg","",true, true);
+
+					$novoPdf = base_path() . "/storage/fatura_" . $invoice->gateway_id.'.pdf';
+
+					$mpdf->Output($novoPdf);
+
+					if (file_exists($novoPdf))
+					{
+						$pdf->addPDF($novoPdf, 'all');
+
+					}
+				}
+			}
+			catch (\Exception $ex)
+			{
+				\Log::error(['arquivo' => $ex->getFile(), 'erro' => $ex->getMessage(), 'linha' => $ex->getLine(), 'trace' => $ex->getTraceAsString()]);
+				echo "erro " . $ex->getMessage();
+			}
+		}
+
+		try
+		{
+			@$pdf->merge('file', $shipping_file);
+		}
+		catch (\Exception $ex)
+		{
+			\Log::error(['arquivo' => $ex->getFile(), 'erro' => $ex->getMessage(), 'linha' => $ex->getLine(), 'trace' => $ex->getTraceAsString()]);
+			echo "erro " . $ex->getMessage();
+		}
+		
+		if (is_array(@$bills_to_delete))
+		{
+			foreach ($bills_to_delete as $bill)
+				@unlink($bill);
+		}
+
+		return ['path_file' => $shipping_file, 'filename' => basename($shipping_file)];
+	}
